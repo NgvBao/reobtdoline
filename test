@@ -1,0 +1,219 @@
+// ================== LINE ROBOT - 7 SENSORS (FIXED) ==================
+
+// ================== TB6612 PIN ==================
+#define PWMA 3
+#define AIN1 4
+#define AIN2 5
+#define PWMB 6
+#define BIN1 7
+#define BIN2 8
+#define STBY 9
+
+// ================== SENSOR PIN ==================
+#define S0 A0
+#define S1 A1
+#define S2 A2
+#define S3 A3
+#define S4 A4
+#define S_LEFT  A5
+#define S_RIGHT A6
+
+// ================== DỮ LIỆU SENSOR ==================
+int sensorMainBin[5];
+int sensorLeftBin, sensorRightBin;
+
+// Ngưỡng (Threshold) - Bạn hãy điều chỉnh nếu cần
+int MAIN_THRESHOLD = 280;
+int AUX_THRESHOLD = 500;
+
+// ================== PID ==================
+float Kp = 35.0; // Tăng Kp để phản xạ nhanh hơn vì xe dài (6cm)
+float Ki = 0.0;
+float Kd = 120.0;
+
+float error = 0, lastError = 0, integral = 0, PID_val = 0;
+
+// ================== TỐC ĐỘ ==================
+int baseSpeed = 90;
+int maxSpeed = 160;
+int turnSpeed = 120; // Tốc độ khi xoay tại chỗ
+bool isSlowing = false;
+
+// ================== TRẠNG THÁI RẼ ==================
+enum TurnState { NONE, TURNING_LEFT, TURNING_RIGHT };
+TurnState turnState = NONE;
+unsigned long turnStartTime = 0;
+const unsigned long MIN_TURN_TIME = 150; // Thời gian tối thiểu để vượt qua nhiễu
+const unsigned long MAX_TURN_TIME = 1000; // Bảo hiểm nếu mất line hoàn toàn
+
+// ================== SETUP ==================
+void setup() {
+  Serial.begin(9600);
+  
+  pinMode(PWMA, OUTPUT); pinMode(AIN1, OUTPUT); pinMode(AIN2, OUTPUT);
+  pinMode(PWMB, OUTPUT); pinMode(BIN1, OUTPUT); pinMode(BIN2, OUTPUT);
+  pinMode(STBY, OUTPUT);
+  
+  digitalWrite(STBY, HIGH);
+  stopMotor();
+  
+  Serial.println("Robot Ready! Starting in 3s...");
+  delay(3000);
+}
+
+// ================== LOOP CHÍNH ==================
+void loop() {
+  readSensors();
+
+  // 1. Nếu đang trong trạng thái rẽ (tiếp tục xoay cho đến khi mắt chính thấy line)
+  if (turnState != NONE) {
+    continueTurning();
+    return;
+  }
+
+  // 2. Phát hiện vạch rẽ (Góc vuông/Chữ T)
+  if (detectLeftTurn()) {
+    startTurnLeft();
+    return;
+  }
+  if (detectRightTurn()) {
+    startTurnRight();
+    return;
+  }
+
+  // 3. Giảm tốc khi thấy mắt ngoài cùng chạm line (chuẩn bị rẽ)
+  isSlowing = (sensorMainBin[0] == 1 || sensorMainBin[4] == 1);
+
+  // 4. Nếu mất line hoàn toàn (tất cả trắng)
+  if (isAllWhite()) {
+    handleLostLine();
+    return;
+  }
+
+  // 5. Đi thẳng bằng PID
+  followLinePID();
+}
+
+// ================== ĐỌC SENSOR ==================
+void readSensors() {
+  for (int i = 0; i < 5; i++) {
+    sensorMainBin[i] = (analogRead(A0 + i) < MAIN_THRESHOLD) ? 1 : 0;
+  }
+  sensorLeftBin = (analogRead(S_LEFT) < AUX_THRESHOLD) ? 1 : 0;
+  sensorRightBin = (analogRead(S_RIGHT) < AUX_THRESHOLD) ? 1 : 0;
+}
+
+// ================== ĐIỀU KHIỂN MOTOR (FIXED) ==================
+void setMotor(int left, int right) {
+  // Motor A (Trái)
+  if (left >= 0) {
+    digitalWrite(AIN1, HIGH); digitalWrite(AIN2, LOW);
+  } else {
+    digitalWrite(AIN1, LOW);  digitalWrite(AIN2, HIGH);
+    left = -left;
+  }
+  analogWrite(PWMA, constrain(left, 0, 255));
+
+  // Motor B (Phải)
+  if (right >= 0) {
+    digitalWrite(BIN1, HIGH); digitalWrite(BIN2, LOW);
+  } else {
+    digitalWrite(BIN1, LOW);  digitalWrite(BIN2, HIGH);
+    right = -right;
+  }
+  analogWrite(PWMB, constrain(right, 0, 255));
+}
+
+// ================== PID ĐI THẲNG ==================
+void followLinePID() {
+  float position = 0;
+  int weight[5] = {-2, -1, 0, 1, 2};
+  long weightedSum = 0;
+  long sum = 0;
+
+  for (int i = 0; i < 5; i++) {
+    int val = 1023 - analogRead(A0 + i); // Đảo giá trị để đen là cao
+    weightedSum += (long)val * weight[i];
+    sum += val;
+  }
+
+  if (sum == 0) return; // Tránh chia cho 0
+  position = (float)weightedSum / (float)sum;
+
+  error = position;
+  integral += error;
+  integral = constrain(integral, -100, 100);
+  
+  PID_val = (Kp * error) + (Ki * integral) + (Kd * (error - lastError));
+  lastError = error;
+
+  int speed = isSlowing ? 70 : baseSpeed; // Giảm tốc khi gặp góc cua
+  setMotor(speed + PID_val, speed - PID_val);
+}
+
+// ================== LOGIC RẼ (THEO Ý BẠN) ==================
+bool detectLeftTurn() {
+  // Rẽ trái khi 2 mắt ngoài cùng bên trái thấy đen
+  return (sensorMainBin[0] == 1 && sensorMainBin[1] == 1);
+}
+
+bool detectRightTurn() {
+  // Rẽ phải khi 2 mắt ngoài cùng bên phải thấy đen
+  return (sensorMainBin[3] == 1 && sensorMainBin[4] == 1);
+}
+
+void startTurnLeft() {
+  turnState = TURNING_LEFT;
+  turnStartTime = millis();
+}
+
+void startTurnRight() {
+  turnState = TURNING_RIGHT;
+  turnStartTime = millis();
+}
+
+void continueTurning() {
+  unsigned long elapsed = millis() - turnStartTime;
+
+  if (turnState == TURNING_LEFT) {
+    // Xoay tại chỗ sang trái: Trái lùi, Phải tiến
+    setMotor(-turnSpeed, turnSpeed);
+
+    // THOÁT RẼ: Khi mắt chính giữa (S2) hoặc mắt gần giữa (S1) quay lại line
+    if (elapsed > MIN_TURN_TIME && (sensorMainBin[2] == 1 || sensorMainBin[1] == 1)) {
+      turnState = NONE;
+      lastError = 0; 
+    }
+  } 
+  else if (turnState == TURNING_RIGHT) {
+    // Xoay tại chỗ sang phải: Trái tiến, Phải lùi
+    setMotor(turnSpeed, -turnSpeed);
+
+    // THOÁT RẼ: Khi mắt chính giữa (S2) hoặc mắt gần giữa (S3) quay lại line
+    if (elapsed > MIN_TURN_TIME && (sensorMainBin[2] == 1 || sensorMainBin[3] == 1)) {
+      turnState = NONE;
+      lastError = 0;
+    }
+  }
+
+  // Bảo hiểm: Nếu rẽ quá lâu mà không thấy line thì dừng rẽ
+  if (elapsed > MAX_TURN_TIME) turnState = NONE;
+}
+
+// ================== XỬ LÝ MẤT LINE ==================
+bool isAllWhite() {
+  for (int i = 0; i < 5; i++) if (sensorMainBin[i] == 1) return false;
+  return true;
+}
+
+void handleLostLine() {
+  // Nếu mất line, dựa vào lastError để quay lại tìm line
+  if (lastError < 0) setMotor(-60, 80); // Quay nhẹ sang trái
+  else setMotor(80, -60);               // Quay nhẹ sang phải
+}
+
+void stopMotor() {
+  digitalWrite(AIN1, LOW); digitalWrite(AIN2, LOW);
+  digitalWrite(BIN1, LOW); digitalWrite(BIN2, LOW);
+  analogWrite(PWMA, 0);    analogWrite(PWMB, 0);
+}
