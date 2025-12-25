@@ -1,0 +1,303 @@
+// ================== LINE ROBOT - PATH PLANNING ==================
+
+// ================== 1. MOTOR & STBY ==================
+#define PWMA 3
+#define AIN1 4
+#define AIN2 5
+#define PWMB 6
+#define BIN1 7
+#define BIN2 8
+#define STBY 9
+
+// ================== 2. SENSOR ==================
+#define S_GUARD_L  2    // D2
+#define S_GUARD_R  12   // D12
+#define S_WING_L A5
+#define S_WING_R A6
+
+// ================== 3. ULTRASONIC ==================
+#define TRIG_PIN 10
+#define ECHO_PIN 11
+int OBSTACLE_DIST = 17;
+
+// ================== 4. CONFIG ==================
+int MAIN_THRESHOLD = 280;
+int WING_THRESHOLD = 500;
+
+int s[7];  
+int wingL = 0, wingR = 0;
+
+// ================== 5. PID ==================
+float Kp = 35.0;
+float Ki = 0.0;
+float Kd = 120.0;
+float error = 0, lastError = 0, integral = 0, PID_val = 0;
+
+int baseSpeed = 110;
+int maxSpeed = 160;
+
+// ================== 6. TỐC ĐỘ RẼ ==================
+int pivotFwd = 110;
+int pivotRev = -30;
+int spinSpeed = 100;
+
+// ================== 7. ĐỊNH NGHĨA HÀNH ĐỘNG ==================
+enum Action {
+  GO_STRAIGHT,
+  TURN_LEFT,
+  TURN_RIGHT,
+  NUDGE_RIGHT,
+  NUDGE_LEFT,
+  SKIP_NOISE
+};
+
+// ================== 8. LẬP TRÌNH PATH ==================
+Action pathPlan[] = {
+  SKIP_NOISE,     // Ngã 1
+  NUDGE_RIGHT,    // Ngã 2
+  TURN_LEFT,      // Ngã 3
+  GO_STRAIGHT,    // Ngã 4
+  TURN_RIGHT      // Ngã 5
+};
+
+int junctionCount = 0;
+bool isCounting = false;
+
+// ================== SETUP ==================
+void setup() {
+  pinMode(PWMA, OUTPUT); pinMode(AIN1, OUTPUT); pinMode(AIN2, OUTPUT);
+  pinMode(PWMB, OUTPUT); pinMode(BIN1, OUTPUT); pinMode(BIN2, OUTPUT);
+  pinMode(STBY, OUTPUT); digitalWrite(STBY, HIGH);
+  
+  pinMode(S_GUARD_L, INPUT);
+  pinMode(S_GUARD_R, INPUT);
+  pinMode(TRIG_PIN, OUTPUT);
+  pinMode(ECHO_PIN, INPUT);
+  
+  delay(2000);
+}
+
+// ================== LOOP ==================
+void loop() {
+  readSensorsDigital();
+
+  // 1. TRÁNH VẬT CẢN
+  if (!isFrontLost() && getDistance() < OBSTACLE_DIST) {
+    handleObstacle();
+    return;
+  }
+
+  // 2. PHÁT HIỆN GIAO LỘ
+  if (s[0] == 1 || s[6] == 1) {
+    if (!isCounting) {
+      junctionCount++;
+      isCounting = true;
+      
+      int totalJunctions = sizeof(pathPlan) / sizeof(Action);
+      
+      if (junctionCount <= totalJunctions) {
+        Action action = pathPlan[junctionCount - 1];
+        executeAction(action);
+        return;
+      }
+    }
+  } else {
+    if (s[0] == 0 && s[6] == 0) {
+      isCounting = false;
+    }
+  }
+
+  // 3. LOGIC CỨU HỘ
+  if (isFrontLost()) {
+    if (wingL == 1) {
+      setMotor(-spinSpeed, spinSpeed);
+      while (isFrontLost()) { readSensorsDigital(); }
+      return;
+    }
+    if (wingR == 1) {
+      setMotor(spinSpeed, -spinSpeed);
+      while (isFrontLost()) { readSensorsDigital(); }
+      return;
+    }
+    if (lastError < 0) setMotor(-50, 90);
+    else setMotor(90, -50);
+    return;
+  }
+
+  // 4. LOGIC RẼ TỰ ĐỘNG (Cho các ngã ngoài pathPlan)
+  if ( (s[1]==1 && s[2]==1) || s[0]==1 ) {
+    setMotor(pivotRev, pivotFwd);
+    while ( !((s[2]==1 && s[3]==1) || (s[3]==1 && s[4]==1)) ) {
+      readSensorsDigital();
+    }
+    resetPIDVars();
+    return;
+  }
+
+  if ( (s[5]==1 && s[4]==1) || s[6]==1 ) {
+    setMotor(pivotFwd, pivotRev);
+    while ( !((s[2]==1 && s[3]==1) || (s[3]==1 && s[4]==1)) ) {
+      readSensorsDigital();
+    }
+    resetPIDVars();
+    return;
+  }
+
+  // 5. PID ANALOG
+  followLinePID_AnalogOriginal();
+}
+
+// ================== THỰC HIỆN HÀNH ĐỘNG ==================
+void executeAction(Action action) {
+  switch(action) {
+    case GO_STRAIGHT:
+      setMotor(baseSpeed, baseSpeed);
+      delay(300);
+      resetPIDVars();
+      break;
+
+    case TURN_LEFT:
+      setMotor(pivotRev, pivotFwd);
+      while ( !((s[2]==1 && s[3]==1) || (s[3]==1 && s[4]==1)) ) {
+        readSensorsDigital();
+      }
+      resetPIDVars();
+      break;
+
+    case TURN_RIGHT:
+      setMotor(pivotFwd, pivotRev);
+      while ( !((s[2]==1 && s[3]==1) || (s[3]==1 && s[4]==1)) ) {
+        readSensorsDigital();
+      }
+      resetPIDVars();
+      break;
+
+    case NUDGE_RIGHT:
+      setMotor(baseSpeed + 80, baseSpeed - 30); 
+      delay(100); 
+      while (s[3] == 0) {
+        readSensorsDigital(); 
+      }
+      resetPIDVars(); 
+      break;
+
+    case NUDGE_LEFT:
+      setMotor(baseSpeed - 30, baseSpeed + 80);
+      delay(100);
+      while (s[3] == 0) {
+        readSensorsDigital();
+      }
+      resetPIDVars();
+      break;
+
+    case SKIP_NOISE:
+      setMotor(baseSpeed, baseSpeed);
+      delay(250);
+      resetPIDVars();
+      break;
+  }
+}
+
+void resetPIDVars() {
+  error = 0;
+  lastError = 0;
+  integral = 0;
+}
+
+void handleObstacle() {
+  setMotor(0, 0);
+  delay(200);
+  setMotor(120, -30);
+  delay(800);
+  setMotor(90, 90);
+  delay(200);
+  while (true) {
+    readSensorsDigital();
+    if (s[3] == 1) break;
+  }
+  setMotor(-30, 100);
+  while ( !(s[2]==1 && s[3]==1) ) {
+    readSensorsDigital();
+  }
+  resetPIDVars();
+}
+
+void readSensorsDigital() {
+  s[0] = digitalRead(S_GUARD_L);
+  s[1] = (analogRead(A0) < MAIN_THRESHOLD) ? 1 : 0;
+  s[2] = (analogRead(A1) < MAIN_THRESHOLD) ? 1 : 0;
+  s[3] = (analogRead(A2) < MAIN_THRESHOLD) ? 1 : 0;
+  s[4] = (analogRead(A3) < MAIN_THRESHOLD) ? 1 : 0;
+  s[5] = (analogRead(A4) < MAIN_THRESHOLD) ? 1 : 0;
+  s[6] = digitalRead(S_GUARD_R);
+
+  wingL = (analogRead(S_WING_L) < WING_THRESHOLD) ? 1 : 0;
+  wingR = (analogRead(S_WING_R) < WING_THRESHOLD) ? 1 : 0;
+}
+
+void followLinePID_AnalogOriginal() {
+  float position = 0;
+  int weight[5] = {-2, -1, 0, 1, 2};
+  long weightedSum = 0;
+  long sum = 0;
+
+  for (int i = 0; i < 5; i++) {
+    int val = 1023 - analogRead(A0 + i);
+    weightedSum += (long)val * weight[i];
+    sum += val;
+  }
+
+  if (sum == 0) return;
+
+  position = (float)weightedSum / (float)sum;
+  error = position;
+  integral += error;
+  integral = constrain(integral, -100, 100);
+
+  PID_val = (Kp * error) + (Ki * integral) + (Kd * (error - lastError));
+  lastError = error;
+
+  int leftSpeed = constrain(baseSpeed + PID_val, -maxSpeed, maxSpeed);
+  int rightSpeed = constrain(baseSpeed - PID_val, -maxSpeed, maxSpeed);
+
+  setMotor(leftSpeed, rightSpeed);
+}
+
+bool isFrontLost() {
+  for (int i=0; i<7; i++) if (s[i] == 1) return false;
+  return true;
+}
+
+float getDistance() {
+  digitalWrite(TRIG_PIN, LOW);
+  delayMicroseconds(2);
+  digitalWrite(TRIG_PIN, HIGH);
+  delayMicroseconds(10);
+  digitalWrite(TRIG_PIN, LOW);
+  long duration = pulseIn(ECHO_PIN, HIGH, 15000);
+  if (duration == 0) return 999;
+  return (float)duration * 0.034 / 2;
+}
+
+void setMotor(int left, int right) {
+  if (left >= 0) {
+    digitalWrite(AIN1, HIGH);
+    digitalWrite(AIN2, LOW);
+  } else {
+    digitalWrite(AIN1, LOW);
+    digitalWrite(AIN2, HIGH);
+    left = -left;
+  }
+
+  if (right >= 0) {
+    digitalWrite(BIN1, HIGH);
+    digitalWrite(BIN2, LOW);
+  } else {
+    digitalWrite(BIN1, LOW);
+    digitalWrite(BIN2, HIGH);
+    right = -right;
+  }
+
+  analogWrite(PWMA, constrain(left, 0, 255));
+  analogWrite(PWMB, constrain(right, 0, 255));
+}
