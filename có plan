@@ -1,302 +1,352 @@
-// ================== LINE ROBOT - PATH PLANNING ==================
-
-// ================== 1. MOTOR & STBY ==================
+// ================== MOTOR ==================
 #define PWMA 3
 #define AIN1 4
 #define AIN2 5
 #define PWMB 6
 #define BIN1 7
 #define BIN2 8
-#define STBY 9
 
-// ================== 2. SENSOR ==================
-#define S_GUARD_L  2    // D2
-#define S_GUARD_R  12   // D12
-#define S_WING_L A5
-#define S_WING_R A6
+// ================== SENSOR ==================
+#define S_L1  2
+#define S_L2  10
+#define S_R1  11
+#define S_R2  12
 
-// ================== 3. ULTRASONIC ==================
-#define TRIG_PIN 10
-#define ECHO_PIN 11
-int OBSTACLE_DIST = 17;
+// ================== ULTRASONIC ==================
+#define TRIG_PIN 13
+#define ECHO_PIN 9
+int OBSTACLE_DIST = 25;
 
-// ================== 4. CONFIG ==================
-int MAIN_THRESHOLD = 280;
-int WING_THRESHOLD = 500;
+// ================== CONFIG ==================
+int MAIN_THRESHOLD = 255;
+int s[9];
 
-int s[7];  
-int wingL = 0, wingR = 0;
-
-// ================== 5. PID ==================
+// ================== PID ==================
 float Kp = 35.0;
 float Ki = 0.0;
 float Kd = 120.0;
-float error = 0, lastError = 0, integral = 0, PID_val = 0;
 
-int baseSpeed = 110;
-int maxSpeed = 160;
+float error = 0, lastError = 0, integral = 0;
 
-// ================== 6. TỐC ĐỘ RẼ ==================
-int pivotFwd = 110;
-int pivotRev = -30;
-int spinSpeed = 100;
+// ================== SPEED ==================
+int baseSpeed = 70;
+int maxSpeed  = 200;
 
-// ================== 7. ĐỊNH NGHĨA HÀNH ĐỘNG ==================
-enum Action {
-  GO_STRAIGHT,
-  TURN_LEFT,
-  TURN_RIGHT,
-  NUDGE_RIGHT,
-  NUDGE_LEFT,
-  SKIP_NOISE
-};
+int pivotFwd = 160;
+int pivotRev = -90;
 
-// ================== 8. LẬP TRÌNH PATH ==================
-Action pathPlan[] = {
-  SKIP_NOISE,     // Ngã 1
-  NUDGE_RIGHT,    // Ngã 2
-  TURN_LEFT,      // Ngã 3
-  GO_STRAIGHT,    // Ngã 4
-  TURN_RIGHT      // Ngã 5
-};
+// ================== MAP ==================
+int dem_nga = 0;
+bool khoa_nga = false;
+bool dang_re = false;   // <<< THÊM DUY NHẤT
 
-int junctionCount = 0;
-bool isCounting = false;
-
-// ================== SETUP ==================
+// ==================================================
 void setup() {
   pinMode(PWMA, OUTPUT); pinMode(AIN1, OUTPUT); pinMode(AIN2, OUTPUT);
   pinMode(PWMB, OUTPUT); pinMode(BIN1, OUTPUT); pinMode(BIN2, OUTPUT);
-  pinMode(STBY, OUTPUT); digitalWrite(STBY, HIGH);
-  
-  pinMode(S_GUARD_L, INPUT);
-  pinMode(S_GUARD_R, INPUT);
+
+  pinMode(S_L1, INPUT);
+  pinMode(S_L2, INPUT);
+  pinMode(S_R1, INPUT);
+  pinMode(S_R2, INPUT);
+
   pinMode(TRIG_PIN, OUTPUT);
   pinMode(ECHO_PIN, INPUT);
-  
-  delay(2000);
+
+  delay(1000);
 }
 
-// ================== LOOP ==================
+// ==================================================
 void loop() {
   readSensorsDigital();
 
-  // 1. TRÁNH VẬT CẢN
+  // ===== 1. TRÁNH VẬT CẢN =====
   if (!isFrontLost() && getDistance() < OBSTACLE_DIST) {
     handleObstacle();
     return;
   }
 
-  // 2. PHÁT HIỆN GIAO LỘ
-  if (s[0] == 1 || s[6] == 1) {
-    if (!isCounting) {
-      junctionCount++;
-      isCounting = true;
-      
-      int totalJunctions = sizeof(pathPlan) / sizeof(Action);
-      
-      if (junctionCount <= totalJunctions) {
-        Action action = pathPlan[junctionCount - 1];
-        executeAction(action);
-        return;
+  // ===== 2. MẤT LINE =====
+  if (isFrontLost()) {
+    setMotor(baseSpeed, baseSpeed);
+    delay(200);
+    resetPID();
+    return;
+  }
+
+  // ===== 3. NGÃ THẬT =====
+  if (nga_that()) {
+    if (!khoa_nga) {
+      khoa_nga = true;
+      dem_nga++;
+
+      // ===== GIỮ NGUYÊN SWITCH CỦA M =====
+      switch (dem_nga) {
+        case 1:
+          diThang(150);
+          break;
+
+        case 2:
+          diThang(150);
+          break;
+
+        case 3:
+          rePhai();
+          break;
+
+        case 4:
+          reTrai();
+          break;
+
+        case 5:
+          diThang(150);
+          break;
+
+        case 6:
+          reTrai();
+          break;
+
+        case 7:
+          diThang(150);
+          break;
+
+        case 8:
+          reTrai();
+          break;
+
+        case 9:
+          rePhai();
+          break;
+
+        case 10:
+          diThang(150);
+          break;
+
+        case 11:
+          rePhai();
+          break;
+
+        case 12:
+          diThang(150);
+          break;
+
+        case 13:
+          diThang(150);
+          break;
+
+        case 14:
+          diThang(150);
+          break;
+
+        default:
+          // An toàn nếu vượt số ngã dự kiến
+          followLinePID_AnalogOriginal();
+          break;
       }
     }
-  } else {
-    if (s[0] == 0 && s[6] == 0) {
-      isCounting = false;
-    }
-  }
-
-  // 3. LOGIC CỨU HỘ
-  if (isFrontLost()) {
-    if (wingL == 1) {
-      setMotor(-spinSpeed, spinSpeed);
-      while (isFrontLost()) { readSensorsDigital(); }
-      return;
-    }
-    if (wingR == 1) {
-      setMotor(spinSpeed, -spinSpeed);
-      while (isFrontLost()) { readSensorsDigital(); }
-      return;
-    }
-    if (lastError < 0) setMotor(-50, 90);
-    else setMotor(90, -50);
     return;
   }
-
-  // 4. LOGIC RẼ TỰ ĐỘNG (Cho các ngã ngoài pathPlan)
-  if ( (s[1]==1 && s[2]==1) || s[0]==1 ) {
-    setMotor(pivotRev, pivotFwd);
-    while ( !((s[2]==1 && s[3]==1) || (s[3]==1 && s[4]==1)) ) {
-      readSensorsDigital();
-    }
-    resetPIDVars();
-    return;
+  else {
+    khoa_nga = false;
   }
 
-  if ( (s[5]==1 && s[4]==1) || s[6]==1 ) {
-    setMotor(pivotFwd, pivotRev);
-    while ( !((s[2]==1 && s[3]==1) || (s[3]==1 && s[4]==1)) ) {
-      readSensorsDigital();
-    }
-    resetPIDVars();
-    return;
-  }
-
-  // 5. PID ANALOG
+  // ===== 4. PID =====
   followLinePID_AnalogOriginal();
 }
 
-// ================== THỰC HIỆN HÀNH ĐỘNG ==================
-void executeAction(Action action) {
-  switch(action) {
-    case GO_STRAIGHT:
-      setMotor(baseSpeed, baseSpeed);
-      delay(300);
-      resetPIDVars();
-      break;
+// ==================================================
+// ===== RẼ TRÁI – ĐÃ SỬA LOGIC (NHÍCH + 2 PHA) =====
+void reTrai() {
+  dang_re = true;                 // khóa đếm ngã
+  unsigned long t0 = millis();
 
-    case TURN_LEFT:
-      setMotor(pivotRev, pivotFwd);
-      while ( !((s[2]==1 && s[3]==1) || (s[3]==1 && s[4]==1)) ) {
-        readSensorsDigital();
-      }
-      resetPIDVars();
-      break;
+  // 1. Nhích lên để thoát line cũ
+  setMotor(150, 150);
+  delay(80);                      // chỉnh 60–100ms tùy xe
 
-    case TURN_RIGHT:
-      setMotor(pivotFwd, pivotRev);
-      while ( !((s[2]==1 && s[3]==1) || (s[3]==1 && s[4]==1)) ) {
-        readSensorsDigital();
-      }
-      resetPIDVars();
-      break;
-
-    case NUDGE_RIGHT:
-      setMotor(baseSpeed + 80, baseSpeed - 30); 
-      delay(100); 
-      while (s[3] == 0) {
-        readSensorsDigital(); 
-      }
-      resetPIDVars(); 
-      break;
-
-    case NUDGE_LEFT:
-      setMotor(baseSpeed - 30, baseSpeed + 80);
-      delay(100);
-      while (s[3] == 0) {
-        readSensorsDigital();
-      }
-      resetPIDVars();
-      break;
-
-    case SKIP_NOISE:
-      setMotor(baseSpeed, baseSpeed);
-      delay(250);
-      resetPIDVars();
-      break;
-  }
-}
-
-void resetPIDVars() {
-  error = 0;
-  lastError = 0;
-  integral = 0;
-}
-
-void handleObstacle() {
-  setMotor(0, 0);
-  delay(200);
-  setMotor(120, -30);
-  delay(800);
-  setMotor(90, 90);
-  delay(200);
+  // 2. Quay trái cho tới khi gặp lại line
   while (true) {
     readSensorsDigital();
-    if (s[3] == 1) break;
+    setMotor(pivotRev, pivotFwd);
+
+    // Đã bắt lại line mới
+    if (s[3] || s[4]) break;
+
+    // An toàn: chống kẹt
+    if (millis() - t0 > 2000) break;
   }
-  setMotor(-30, 100);
-  while ( !(s[2]==1 && s[3]==1) ) {
+
+  resetPID();
+  dang_re = false;                // mở lại đếm ngã
+}
+
+
+// ==================================================
+// ===== RẼ PHẢI – ĐÃ SỬA LOGIC (NHÍCH + 2 PHA) =====
+void rePhai() {
+  dang_re = true;                 // KHÓA đếm ngã
+  unsigned long t0 = millis();
+
+  // 1. Nhích lên để thoát line cũ
+  setMotor(130, 130);
+  delay(80);                      // chỉnh 60–100ms tùy xe
+
+  // 2. Quay phải cho tới khi gặp lại line
+  while (true) {
     readSensorsDigital();
+    setMotor(pivotFwd, pivotRev);
+
+    // ĐÃ BẮT LẠI LINE MỚI
+    if (s[4] || s[5]) break;
+
+    // An toàn: chống kẹt
+    if (millis() - t0 > 2000) break;
   }
-  resetPIDVars();
+
+  resetPID();
+  dang_re = false;                // MỞ lại đếm ngã
 }
 
+// ==================================================
+void diThang(int t) {
+  setMotor(180, 180);
+  delay(t);
+}
+
+// ==================================================
 void readSensorsDigital() {
-  s[0] = digitalRead(S_GUARD_L);
-  s[1] = (analogRead(A0) < MAIN_THRESHOLD) ? 1 : 0;
-  s[2] = (analogRead(A1) < MAIN_THRESHOLD) ? 1 : 0;
-  s[3] = (analogRead(A2) < MAIN_THRESHOLD) ? 1 : 0;
-  s[4] = (analogRead(A3) < MAIN_THRESHOLD) ? 1 : 0;
-  s[5] = (analogRead(A4) < MAIN_THRESHOLD) ? 1 : 0;
-  s[6] = digitalRead(S_GUARD_R);
+  s[0] = digitalRead(S_L1);
+  s[1] = digitalRead(S_L2);
 
-  wingL = (analogRead(S_WING_L) < WING_THRESHOLD) ? 1 : 0;
-  wingR = (analogRead(S_WING_R) < WING_THRESHOLD) ? 1 : 0;
+  s[2] = (analogRead(A0) < MAIN_THRESHOLD);
+  s[3] = (analogRead(A1) < MAIN_THRESHOLD);
+  s[4] = (analogRead(A2) < MAIN_THRESHOLD);
+  s[5] = (analogRead(A3) < MAIN_THRESHOLD);
+  s[6] = (analogRead(A4) < MAIN_THRESHOLD);
+
+  s[7] = digitalRead(S_R1);
+  s[8] = digitalRead(S_R2);
 }
 
-void followLinePID_AnalogOriginal() {
-  float position = 0;
-  int weight[5] = {-2, -1, 0, 1, 2};
-  long weightedSum = 0;
-  long sum = 0;
-
-  for (int i = 0; i < 5; i++) {
-    int val = 1023 - analogRead(A0 + i);
-    weightedSum += (long)val * weight[i];
-    sum += val;
-  }
-
-  if (sum == 0) return;
-
-  position = (float)weightedSum / (float)sum;
-  error = position;
-  integral += error;
-  integral = constrain(integral, -100, 100);
-
-  PID_val = (Kp * error) + (Ki * integral) + (Kd * (error - lastError));
-  lastError = error;
-
-  int leftSpeed = constrain(baseSpeed + PID_val, -maxSpeed, maxSpeed);
-  int rightSpeed = constrain(baseSpeed - PID_val, -maxSpeed, maxSpeed);
-
-  setMotor(leftSpeed, rightSpeed);
-}
-
+// ==================================================
 bool isFrontLost() {
-  for (int i=0; i<7; i++) if (s[i] == 1) return false;
+  for (int i = 0; i < 9; i++)
+    if (s[i]) return false;
   return true;
 }
 
-float getDistance() {
-  digitalWrite(TRIG_PIN, LOW);
-  delayMicroseconds(2);
-  digitalWrite(TRIG_PIN, HIGH);
-  delayMicroseconds(10);
-  digitalWrite(TRIG_PIN, LOW);
-  long duration = pulseIn(ECHO_PIN, HIGH, 15000);
-  if (duration == 0) return 999;
-  return (float)duration * 0.034 / 2;
+// ==================================================
+// ===== NGÃ – CHỈ SỬA ĐÚNG 1 ĐIỀU KIỆN =====
+bool nga_that() {
+  if (dang_re) return false;   // <<< ĐANG RẼ → KHÔNG ĐẾM NGÃ
+
+  if (s[0] || s[8])
+    return true;
+
+  return false;
 }
 
-void setMotor(int left, int right) {
-  if (left >= 0) {
-    digitalWrite(AIN1, HIGH);
-    digitalWrite(AIN2, LOW);
-  } else {
-    digitalWrite(AIN1, LOW);
-    digitalWrite(AIN2, HIGH);
-    left = -left;
+// ==================================================
+void followLinePID_AnalogOriginal() {
+  int weight[7] = {-3, -2, -1, 0, 1, 2, 3};
+
+  long weightedSum = 0;
+  long sum = 0;
+
+  if (s[1]) {
+    weightedSum += weight[0] * 200;
+    sum += 200;
   }
 
-  if (right >= 0) {
-    digitalWrite(BIN1, HIGH);
-    digitalWrite(BIN2, LOW);
-  } else {
-    digitalWrite(BIN1, LOW);
-    digitalWrite(BIN2, HIGH);
-    right = -right;
+  for (int i = 0; i < 5; i++) {
+    int raw = analogRead(A0 + i);
+    int val = (raw < MAIN_THRESHOLD) ? (MAIN_THRESHOLD - raw) : 0;
+
+    weightedSum += (long)val * weight[i + 1];
+    sum += val;
   }
+
+  if (s[7]) {
+    weightedSum += weight[6] * 200;
+    sum += 200;
+  }
+
+  if (sum == 0) {
+    setMotor(baseSpeed, baseSpeed);
+    return;
+  }
+
+  float error = (float)weightedSum / sum;
+  float derivative = error - lastError;
+  lastError = error;
+
+  float pid = Kp * error + Kd * derivative;
+  pid = constrain(pid, -baseSpeed, baseSpeed);
+
+  int left  = constrain(baseSpeed + pid, 0, maxSpeed);
+  int right = constrain(baseSpeed - pid, 0, maxSpeed);
+
+  setMotor(left, right);
+}
+
+// ==================================================
+void resetPID() {
+  error = lastError = integral = 0;
+}
+
+// ==================================================
+float getDistance() {
+  digitalWrite(TRIG_PIN, LOW); delayMicroseconds(2);
+  digitalWrite(TRIG_PIN, HIGH); delayMicroseconds(10);
+  digitalWrite(TRIG_PIN, LOW);
+
+  long duration = pulseIn(ECHO_PIN, HIGH, 15000);
+  if (duration == 0) return 999;
+  return duration * 0.034 / 2;
+}
+
+// ==================================================
+void handleObstacle() {
+  dang_re = true;   // khóa đếm ngã
+
+  // 1. DỪNG XE
+  setMotor(0, 0);
+  delay(200);
+
+  // 2. QUAY PHẢI ~90° (để hướng xe vuông góc line cũ)
+  setMotor(pivotFwd, pivotRev);
+  delay(850);   // chỉnh cho đúng 90° với xe m
+
+  // 3. ĐI THẲNG NGANG SÂN (VUÔNG GÓC LINE CŨ)
+  setMotor(100, 100);
+
+  // 4. CHỜ TỚI KHI GẶP LINE MỚI (song song line cũ)
+  while (true) {
+    readSensorsDigital();
+    if (s[2] || s[3] || s[4]) break;
+  }
+
+  // 5. QUAY TRÁI ĐỂ SONG SONG LINE MỚI
+  setMotor(pivotRev, pivotFwd);
+
+  // 6. CHỜ MẮT GIỮA BẮT LINE → ĐÃ BÁM
+  while (true) {
+    readSensorsDigital();
+    if (s[3]) break;
+  }
+
+  // 7. TRẢ LẠI PID
+  resetPID();
+  dang_re = false;
+}
+
+// ==================================================
+void setMotor(int left, int right) {
+  if (left >= 0) { digitalWrite(AIN1, HIGH); digitalWrite(AIN2, LOW); }
+  else { digitalWrite(AIN1, LOW); digitalWrite(AIN2, HIGH); left = -left; }
+
+  if (right >= 0) { digitalWrite(BIN1, HIGH); digitalWrite(BIN2, LOW); }
+  else { digitalWrite(BIN1, LOW); digitalWrite(BIN2, HIGH); right = -right; }
 
   analogWrite(PWMA, constrain(left, 0, 255));
   analogWrite(PWMB, constrain(right, 0, 255));
