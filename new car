@@ -1,0 +1,410 @@
+// ================== MOTOR ==================
+#define PWMA 3
+#define AIN1 4
+#define AIN2 5
+#define PWMB 6
+#define BIN1 7
+#define BIN2 8
+#define LED 12 // LED báo hiệu đếm ngã
+
+// ================== SENSOR ==================
+// Phần cứng mới: 5 mắt analog + 2 cảm biến phụ
+#define S_LEFT  2     // cảm biến phụ trái
+#define S_RIGHT 10    // cảm biến phụ phải
+
+// ================== ULTRASONIC ==================
+#define TRIG_PIN 11   // TRIG mới
+#define ECHO_PIN 9
+int OBSTACLE_DIST = 15;
+
+// ================== CONFIG ==================
+int MAIN_THRESHOLD = 245;
+int s[7]; // Chỉ dùng 7 mắt
+
+// ================== PID ==================
+float Kp = 45.0;
+float Ki = 0.0;
+float Kd = 115.0;
+
+float error = 0, lastError = 0, integral = 0;
+
+// ================== SPEED ==================
+int baseSpeed = 155;
+int maxSpeed  = 210;
+
+int pivotFwd = 180;
+int pivotRev = -100;
+
+// ================== MAP ==================
+int dem_nga = 0;
+bool khoa_nga = false;
+bool dang_re = false;
+
+// ==================================================
+void setup() {
+  pinMode(PWMA, OUTPUT); 
+  pinMode(AIN1, OUTPUT); 
+  pinMode(AIN2, OUTPUT);
+  pinMode(PWMB, OUTPUT); 
+  pinMode(BIN1, OUTPUT); 
+  pinMode(BIN2, OUTPUT);
+  pinMode(LED, OUTPUT);
+
+  pinMode(S_LEFT, INPUT);
+  pinMode(S_RIGHT, INPUT);
+  pinMode(LED, OUTPUT);
+  digitalWrite(LED, LOW);
+  pinMode(TRIG_PIN, OUTPUT);
+  pinMode(ECHO_PIN, INPUT);
+
+  delay(1000);
+}
+
+// ==================================================
+void loop() {
+  readSensorsDigital();
+
+  // ===== 1. TRÁNH VẬT CẢN =====
+  if (!isFrontLost() && getDistance() < OBSTACLE_DIST) {
+    handleObstacle();
+    return;
+  }
+
+  // ===== 2. MẤT LINE =====
+  if (isFrontLost()) {
+    setMotor(baseSpeed, baseSpeed);
+    delay(200);
+    resetPID();
+    return;
+  }
+
+  // ===== 3. NGÃ THẬT =====
+  if (nga_that()) {
+     
+    if (!khoa_nga) {
+      digitalWrite(LED, HIGH); // Bật đèn khi đếm ngã
+      delay(60);
+      digitalWrite(LED, LOW);
+      khoa_nga = true;
+      dem_nga++;
+      
+     
+      
+      // ==== PHANH  ====
+      setMotor(0, 0);
+      delay(30);  
+
+      // ===== GIỮ NGUYÊN SWITCH CỦA M =====
+      switch (dem_nga) {
+        case 1:
+          diThang(110);
+          break;
+
+        case 2:
+          diThang(110);
+          break;
+
+        case 3:
+          rePhai();
+          break;
+
+        case 4:
+          reTrai();
+          break;
+
+        case 5:
+          diThang(70);
+          break;
+
+        case 6:
+          reTrai();
+          break;
+
+        case 7:
+          diThang(70);
+          break;
+
+        case 8:
+          reTrai();
+          break;
+
+        case 9:
+          rePhai();
+          break;
+
+        case 10:
+          diThang(70);
+          break;
+
+        case 11:
+          rePhai();
+          break;
+
+        case 12:
+          diThang(70);
+          break;
+
+        case 13:
+          diThang(70);
+          break;
+
+        case 14:
+          diThang(70);
+          break;
+
+        default:
+          followLinePID_AnalogOriginal();
+          break;
+      }
+      digitalWrite(LED, LOW); // Tắt đèn sau khi xử lý xong ngã
+    }
+    return;
+  }
+  else {
+    khoa_nga = false;
+    digitalWrite(LED, LOW);
+  }
+
+  // ===== 4. PID =====
+  followLinePID_AnalogOriginal();
+}
+
+// ==================================================
+void reTrai() {
+  dang_re = true;
+  unsigned long t0 = millis();
+
+//  setMotor(150, 150);
+//  delay(80);
+
+  while (true) {
+    readSensorsDigital();
+    setMotor(pivotRev, pivotFwd);
+
+    if (s[3] ) {
+        break;
+    }
+
+    if (millis() - t0 > 2000) {
+        break;
+    }
+  }
+
+  resetPID();
+  dang_re = false;
+}
+
+// ==================================================
+void rePhai() {
+  dang_re = true;
+  unsigned long t0 = millis();
+
+//  setMotor(130, 130);
+//  delay(80);
+
+  while (true) {
+    readSensorsDigital();
+    setMotor(pivotFwd, pivotRev);
+
+    if (s[3]) {
+        break;
+    }
+
+    if (millis() - t0 > 2000) {
+        break;
+    }
+  }
+
+  resetPID();
+  dang_re = false;
+}
+
+// ==================================================
+void diThang(int t) {
+  setMotor(170, 170);
+  delay(t);
+}
+
+// ==================================================
+void readSensorsDigital() {
+  // Mắt phụ bên trái
+  s[0] = digitalRead(S_LEFT);
+  
+  // 5 Mắt Analog ở giữa
+  s[1] = (analogRead(A0) < MAIN_THRESHOLD);
+  s[2] = (analogRead(A1) < MAIN_THRESHOLD);
+  s[3] = (analogRead(A2) < MAIN_THRESHOLD);
+  s[4] = (analogRead(A3) < MAIN_THRESHOLD);
+  s[5] = (analogRead(A4) < MAIN_THRESHOLD);
+
+  // Mắt phụ bên phải
+  s[6] = digitalRead(S_RIGHT);
+}
+
+// ==================================================
+bool isFrontLost() {
+  if (s[0]) return false;
+  if (s[1]) return false;
+  if (s[2]) return false;
+  if (s[3]) return false;
+  if (s[4]) return false;
+  if (s[5]) return false;
+  if (s[6]) return false;
+  
+  return true;
+}
+
+// ==================================================
+bool nga_that() {
+  if (dang_re) {
+      return false;
+  }
+
+  // Kiểm tra 2 mắt phụ ngoài cùng
+  if (s[0] || s[6]) {
+    return true;
+  }
+
+  return false;
+}
+
+// ==================================================
+void followLinePID_AnalogOriginal() {
+  // Trọng số cho 7 mắt: s0, s1, s2, s3, s4, s5, s6
+  int weight[7] = {-4, -2, -1, 0, 1, 2, 4};
+
+  long weightedSum = 0;
+  long sum = 0;
+
+  // Xử lý mắt phụ trái s0
+  if (s[0]) {
+    weightedSum += (long)weight[0] * 300;
+    sum += 300;
+  }
+
+  // Xử lý 5 mắt analog (s1 đến s5)
+  // Mắt s1 (A0)
+  int r1 = analogRead(A0);
+  int v1 = (r1 < MAIN_THRESHOLD) ? (MAIN_THRESHOLD - r1) : 0;
+  weightedSum += (long)v1 * weight[1];
+  sum += v1;
+
+  // Mắt s2 (A1)
+  int r2 = analogRead(A1);
+  int v2 = (r2 < MAIN_THRESHOLD) ? (MAIN_THRESHOLD - r2) : 0;
+  weightedSum += (long)v2 * weight[2];
+  sum += v2;
+
+  // Mắt s3 (A2)
+  int r3 = analogRead(A2);
+  int v3 = (r3 < MAIN_THRESHOLD) ? (MAIN_THRESHOLD - r3) : 0;
+  weightedSum += (long)v3 * weight[3];
+  sum += v3;
+
+  // Mắt s4 (A3)
+  int r4 = analogRead(A3);
+  int v4 = (r4 < MAIN_THRESHOLD) ? (MAIN_THRESHOLD - r4) : 0;
+  weightedSum += (long)v4 * weight[4];
+  sum += v4;
+
+  // Mắt s5 (A4)
+  int r5 = analogRead(A4);
+  int v5 = (r5 < MAIN_THRESHOLD) ? (MAIN_THRESHOLD - r5) : 0;
+  weightedSum += (long)v5 * weight[5];
+  sum += v5;
+
+  // Xử lý mắt phụ phải s6
+  if (s[6]) {
+    weightedSum += (long)weight[6] * 300;
+    sum += 300;
+  }
+
+  if (sum == 0) {
+    setMotor(baseSpeed, baseSpeed);
+    return;
+  }
+
+  error = (float)weightedSum / sum;
+  float derivative = error - lastError;
+  lastError = error;
+
+  float pid = Kp * error + Kd * derivative;
+  pid = constrain(pid, -baseSpeed, baseSpeed);
+
+  int left  = constrain(baseSpeed + pid, 0, maxSpeed);
+  int right = constrain(baseSpeed - pid, 0, maxSpeed);
+
+  setMotor(left, right);
+}
+
+// ==================================================
+void resetPID() {
+  error = 0;
+  lastError = 0;
+  integral = 0;
+}
+
+// ==================================================
+float getDistance() {
+  digitalWrite(TRIG_PIN, LOW); 
+  delayMicroseconds(2);
+  digitalWrite(TRIG_PIN, HIGH); 
+  delayMicroseconds(10);
+  digitalWrite(TRIG_PIN, LOW);
+
+  long duration = pulseIn(ECHO_PIN, HIGH, 15000);
+  if (duration == 0) return 999;
+  return duration * 0.034 / 2;
+}
+
+// ==================================================
+void handleObstacle() {
+  dang_re = true;
+
+  setMotor(0, 0);
+  delay(200);
+
+  setMotor(pivotFwd , -30 );
+  delay(600); 
+
+  setMotor(100, 100);
+  while (true) {
+    readSensorsDigital();
+    if (s[2] || s[3] || s[4]) break;
+  }
+
+  setMotor(pivotRev, pivotFwd);
+  while (true) {
+    readSensorsDigital();
+    if (s[3]) break;
+  }
+
+  resetPID();
+  dang_re = false;
+}
+
+// ==================================================
+void setMotor(int left, int right) {
+  if (left >= 0) { 
+    digitalWrite(AIN1, HIGH); 
+    digitalWrite(AIN2, LOW); 
+  }
+  else { 
+    digitalWrite(AIN1, LOW); 
+    digitalWrite(AIN2, HIGH); 
+    left = -left; 
+  }
+
+  if (right >= 0) { 
+    digitalWrite(BIN1, HIGH); 
+    digitalWrite(BIN2, LOW); 
+  }
+  else { 
+    digitalWrite(BIN1, LOW); 
+    digitalWrite(BIN2, HIGH); 
+    right = -right; 
+  }
+
+  analogWrite(PWMA, constrain(left, 0, 255));
+  analogWrite(PWMB, constrain(right, 0, 255));
+}
