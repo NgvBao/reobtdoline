@@ -1,0 +1,433 @@
+#include <EEPROM.h>
+
+// ================== MOTOR (ĐỘNG CƠ) ==================
+#define PWMA 3
+#define AIN1 4
+#define AIN2 5
+#define PWMB 6
+#define BIN1 7
+#define BIN2 8
+#define LED 12 
+
+// ================== NÚT NHẤN (SỬA ĐỔI) ==================
+// Dùng cho module 2 nút (Nhấn = HIGH)
+#define btn1 A5     // Nút K1: Để BẮT ĐẦU học
+#define btn2 13     // Nút K2: Để LƯU và THOÁT
+
+// ================== CẢM BIẾN ==================
+#define s_trai  2   // Mắt phụ trái
+#define s_phai 10   // Mắt phụ phải
+
+// Mảng lưu giá trị học màu (cho 5 mắt A0-A4)
+int min_val[5]; // Giá trị nhỏ nhất (Đen)
+int max_val[5]; // Giá trị lớn nhất (Trắng)
+int nguong[5];  // Ngưỡng trung bình
+
+// ================== SIÊU ÂM ==================
+#define TRIG_PIN 11   
+#define ECHO_PIN 9
+int khoangcach = 15;
+bool che_do_ve_dich = false; // Cờ hiệu: False = Chạy cũ, True = Chạy về đích
+int dem_vat_can = 0;         // Đếm số lần gặp tường (1=Rẽ Phải, 2=Rẽ Trái)
+// ================== TRẠNG THÁI ==================
+int s[7]; // Mảng trạng thái 0/1 của 7 mắt
+
+// ================== PID ==================
+float Kp = 65.0; 
+float Ki = 0.0;
+float Kd = 180.0;
+
+float error = 0, lastError = 0;
+
+// ================== TỐC ĐỘ ==================
+int tocdo_cb = 155; 
+int tocdo_max = 210;
+
+int xoay_thuan = 150;
+int xoay_nguoc = -40;
+
+// ================== BIẾN MAP ==================
+int dem_nga = 0;
+bool khoa_nga = false;
+bool dang_re = false;
+
+// ==================================================
+void setup() {
+  Serial.begin(9600); 
+
+  pinMode(PWMA, OUTPUT); pinMode(AIN1, OUTPUT); pinMode(AIN2, OUTPUT);
+  pinMode(PWMB, OUTPUT); pinMode(BIN1, OUTPUT); pinMode(BIN2, OUTPUT);
+  pinMode(LED, OUTPUT);
+  
+  pinMode(s_trai, INPUT);
+  pinMode(s_phai, INPUT);
+  pinMode(TRIG_PIN, OUTPUT);
+  pinMode(ECHO_PIN, INPUT);
+  
+  // --- SỬA ĐỔI: CẤU HÌNH 2 NÚT BẤM (INPUT thường vì module Active HIGH) ---
+  pinMode(btn1, INPUT); 
+  pinMode(btn2, INPUT); 
+
+  // --- 1. CÀI ĐẶT MẶC ĐỊNH ---
+  for(int i=0; i<5; i++) {
+    min_val[i] = 1023; // Để tìm min
+    max_val[i] = 0;    // Để tìm max
+    nguong[i] = 500;   // Ngưỡng tạm
+  }
+
+  // --- 2. CHẾ ĐỘ HỌC MÀU ---
+  // Nếu nhấn giữ nút K1 (A5) khi bật nguồn thì vào học
+  if (digitalRead(btn1) == HIGH) {
+    hoc_mau();
+  }
+
+  delay(500);
+}
+
+// ==================================================
+void loop() {
+  if (che_do_ve_dich == true) {
+      xu_ly_ve_dich_blue(); // Gọi hàm xử lý riêng cho đoạn cuối
+      return; // <--- LỆNH QUAN TRỌNG: Thoát ngay, không chạy xuống dưới nữa!
+  }
+  // [MỚI THÊM] KIỂM TRA NÚT K2 ĐỂ RESET GAME
+  if (digitalRead(btn2) == HIGH) {
+    cho_lenh_reset(); // Gọi hàm xử lý reset
+    return; // Quay lại đầu vòng lặp, không chạy các lệnh dưới
+  }
+
+  doc_cam_bien(); 
+
+  // 1. TRÁNH VẬT CẢN
+  if (!mat_line() && lay_kc() < khoangcach) {
+    tranh_vat_can();
+    return;
+  }
+  // 3. ĐẾM NGÃ (GIẢI MAP)
+  if (check_nga()) {
+    if (!khoa_nga) {
+      digitalWrite(LED, HIGH); delay(150); digitalWrite(LED, LOW);
+      khoa_nga = true;
+      dem_nga++;
+      
+      set_motor(0, 0); delay(15); 
+
+      // LOGIC CHẠY MAP CŨ
+      switch (dem_nga) {
+        case 1: chay_thang(110); break;
+        case 2: chay_thang(110); break;
+        case 3: re_phai(); break;
+        case 4: re_trai(); break;
+        case 5: chay_thang(70);on_dinh_di_mu(900, 1200); break;
+        case 6: re_trai(); break;
+        case 7: chay_thang(70); break;
+        case 8: re_trai();on_dinh_di_mu(1750, 800); break;
+        case 9: chay_thang(90); re_phai(); break;
+        case 10: chay_thang(70); break;
+        case 11: re_phai(); break;
+        case 12: chay_thang(70); break;
+        case 13: chay_thang(70); break;
+        case 14: chay_thang(70); break;
+        case 15: re_trai();che_do_ve_dich = true;xoa_pid(); break; 
+        default: chay_pid(); break;
+      }
+      digitalWrite(LED, LOW);
+    }
+    return;
+  }
+  else {
+    khoa_nga = false;
+    digitalWrite(LED, LOW);
+  }
+
+  // 4. CHẠY PID BÁM LINE
+  chay_pid();
+}
+//  HÀM XỬ LÝ RESET KHI NHẤN K2
+void cho_lenh_reset() {
+  set_motor(0, 0); // Phanh gấp
+  
+  // Reset các biến quan trọng về 0
+  dem_nga = 0;
+  khoa_nga = false;
+  dang_re = false;
+  xoa_pid();
+
+  digitalWrite(LED, HIGH); // Bật đèn báo đã dừng
+  delay(200); // Chờ 1 giây cho ổn định
+  digitalWrite(LED, LOW);
+
+  // Chờ nhấn nút K2 lần nữa để chạy lại
+  while(digitalRead(btn2) == LOW) {
+     // Nháy đèn báo hiệu trạng thái chờ
+     digitalWrite(LED, HIGH); delay(100);
+     digitalWrite(LED, LOW); delay(400);
+  }
+  
+  // Chờ nhả nút ra rồi mới chạy
+  while(digitalRead(btn2) == HIGH);
+  delay(500); // Delay an toàn
+}
+
+// ==================================================
+// HÀM HỌC MÀU (ĐÃ SỬA CHO 2 NÚT)
+void hoc_mau() {
+  digitalWrite(LED, HIGH); // Bật đèn báo hiệu đang học
+  Serial.println("DA VAO CHE DO HOC MAU...");
+  Serial.println("1. Quet xe qua lai vach den.");
+  Serial.println("2. Nhan nut K2 (D13) de LUU.");
+  
+  // Vòng lặp chạy liên tục cho đến khi nhấn nút K2 (btn2)
+  while (digitalRead(btn2) == LOW) {
+    for (int i = 0; i < 5; i++) {
+      int val = analogRead(A0 + i);
+      
+      // Logic: Trắng cao, Đen thấp
+      if (val > max_val[i]) max_val[i] = val; // Tìm Trắng (Max)
+      if (val < min_val[i]) min_val[i] = val; // Tìm Đen (Min)
+    }
+  }
+
+  // Tính ngưỡng trung bình sau khi thoát vòng lặp
+  Serial.println("KET QUA:");
+  for (int i = 0; i < 5; i++) {
+    nguong[i] = (max_val[i] + min_val[i]) / 2;
+    Serial.print(nguong[i]); Serial.print(" ");
+  }
+  Serial.println();
+  
+  digitalWrite(LED, LOW);
+  
+  // Nháy đèn báo xong
+  for(int i=0; i<6; i++) {
+    digitalWrite(LED, !digitalRead(LED)); delay(200);
+  }
+}
+
+// ==================================================
+// CÁC HÀM DI CHUYỂN
+void re_trai() {
+  dang_re = true;
+  unsigned long t0 = millis();
+
+  // Giai đoạn 1: Đi thẳng qua tâm ngã tư
+  set_motor(tocdo_cb, tocdo_cb); 
+  delay(200); 
+
+  // Giai đoạn 2: Xoay tại chỗ tìm line dọc
+  while (true) {
+    doc_cam_bien();
+    set_motor(xoay_nguoc, xoay_thuan); 
+
+    if (s[3]) break; 
+
+    if (millis() - t0 > 2500) break; 
+  }
+
+  xoa_pid();
+  dang_re = false;
+}
+
+void re_phai() {
+  dang_re = true;
+  unsigned long t0 = millis();
+
+  // Giai đoạn 1: Đi thẳng qua tâm ngã tư
+  set_motor(tocdo_cb, tocdo_cb); 
+  delay(200); 
+
+  // Giai đoạn 2: Xoay tại chỗ tìm line dọc
+  while (true) {
+    doc_cam_bien();
+    set_motor(xoay_thuan, xoay_nguoc); 
+
+    if (s[3]) break; 
+
+    if (millis() - t0 > 2500) break; 
+  }
+
+  xoa_pid();
+  dang_re = false;
+}
+void chay_thang(int t) {
+  set_motor(170, 170);
+  delay(t);
+}
+
+void on_dinh_di_mu(int tg_pid, int tg_mu) {
+  unsigned long t0 = millis();
+  while (millis() - t0 < tg_pid) {
+    doc_cam_bien();
+    chay_pid();
+  }
+  xoa_pid();
+  set_motor(tocdo_cb, tocdo_cb);
+  delay(tg_mu);
+}
+
+// ==================================================
+// ĐỌC CẢM BIẾN
+void doc_cam_bien() {
+  s[0] = digitalRead(s_trai);
+  
+  // So sánh với ngưỡng đã học
+  // Đen < Ngưỡng => là 1 (Có line)
+  s[1] = (analogRead(A0) < nguong[0]);
+  s[2] = (analogRead(A1) < nguong[1]);
+  s[3] = (analogRead(A2) < nguong[2]);
+  s[4] = (analogRead(A3) < nguong[3]);
+  s[5] = (analogRead(A4) < nguong[4]);
+
+  s[6] = digitalRead(s_phai);
+}
+
+// ==================================================
+bool mat_line() {
+  if (s[0] || s[1] || s[2] || s[3] || s[4] || s[5] || s[6]) return false;
+  return true;
+}
+
+bool check_nga() {
+  if (dang_re) return false;
+  if ((s[0] || s[6])) return true;
+  return false;
+}
+
+// ==================================================
+// HÀM PID
+void chay_pid() {
+  int trong_so[7] = {-4, -2, -1, 0, 1, 2, 4};
+  long tong_trong_so = 0;
+  long tong = 0;
+
+  if (s[0]) { tong_trong_so += (long)trong_so[0] * 1000; tong += 1000; }
+
+  for(int i=0; i<5; i++) {
+     int val = analogRead(A0 + i);
+     
+     // Map từ (Min, Max) sang (1000, 0) (Đen là 1000, Trắng là 0)
+     int v = map(val, min_val[i], max_val[i], 1000, 0);
+     v = constrain(v, 0, 1000); 
+     
+     if (v > 50) { 
+        tong_trong_so += (long)v * trong_so[i+1]; 
+        tong += v;
+     }
+  }
+
+  if (s[6]) { tong_trong_so += (long)trong_so[6] * 1000; tong += 1000; }
+
+  if (tong == 0) {
+    set_motor(tocdo_cb, tocdo_cb);
+    return;
+  }
+
+  error = (float)tong_trong_so / tong;
+  float dao_ham = error - lastError;
+  lastError = error;
+
+  float pid_out = Kp * error + Kd * dao_ham;
+  pid_out = constrain(pid_out, -tocdo_cb, tocdo_cb);
+
+  int trai  = constrain(tocdo_cb + pid_out, -100, tocdo_max);
+  int phai = constrain(tocdo_cb - pid_out, -100, tocdo_max);
+
+  set_motor(trai, phai);
+}
+
+void xoa_pid() {
+  error = 0; lastError = 0;
+}
+
+// ==================================================
+float lay_kc() {
+  digitalWrite(TRIG_PIN, LOW); delayMicroseconds(2);
+  digitalWrite(TRIG_PIN, HIGH); delayMicroseconds(10);
+  digitalWrite(TRIG_PIN, LOW);
+  long time = pulseIn(ECHO_PIN, HIGH, 15000);
+  if (time == 0) return 999;
+  return time * 0.034 / 2;
+}
+
+void tranh_vat_can() {
+  dang_re = true;
+  set_motor(0, 0); delay(200);
+  set_motor(xoay_thuan , -30 ); delay(700); 
+  set_motor(100, 100);
+  while (true) {
+    doc_cam_bien();
+    if (s[2] || s[3]) break;
+  }
+  set_motor(xoay_nguoc, xoay_thuan);
+  while (true) {
+    doc_cam_bien();
+    if (s[3]) break;
+  }
+  xoa_pid();
+  dang_re = false;
+}
+
+// ==================================================
+void set_motor(int trai, int phai) {
+  if (trai >= 0) { digitalWrite(AIN1, HIGH); digitalWrite(AIN2, LOW); }
+  else { digitalWrite(AIN1, LOW); digitalWrite(AIN2, HIGH); trai = -trai; }
+
+  if (phai >= 0) { digitalWrite(BIN1, HIGH); digitalWrite(BIN2, LOW); }
+  else { digitalWrite(BIN1, LOW); digitalWrite(BIN2, HIGH); phai = -phai; }
+
+  analogWrite(PWMA, constrain(trai, 0, 255));
+  analogWrite(PWMB, constrain(phai, 0, 255));
+}
+// ==================================================
+// HÀM XỬ LÝ ĐOẠN CUỐI (TỪ 80 VỀ ĐÍCH)
+// ==================================================
+// ==================================================
+// HÀM XỬ LÝ VỀ ĐÍCH (FINAL - LOGIC NHÍCH LÊN)
+// ==================================================
+void xu_ly_ve_dich_blue() {
+  
+  // 1. Đo khoảng cách liên tục
+  float dist = lay_kc();
+  // TRƯỜNG HỢP A: CHƯA GẶP TƯỜNG (Khoảng cách xa)
+  if (dist >= 12 || dist == 0) { 
+    set_motor(120, 120); 
+  }
+  // TRƯỜNG HỢP B: GẶP TƯỜNG (Khoảng cách < 12cm)
+  else if (dist < 12 && dist > 1) { 
+    
+    // PHANH GẤP TRƯỚC TIÊN
+    set_motor(0, 0); delay(200);
+    
+    // Tăng biến đếm (Đã gặp 1 bức tường)
+    dem_vat_can++; 
+
+    // --- XỬ LÝ RẼ ---
+    
+    if (dem_vat_can == 1) {
+       // [TƯỜNG 1]: Rẽ PHẢI
+       set_motor(150, -80); 
+       delay(550); // CHỈNH SỐ NÀY để quay đúng 90 độ
+       set_motor(120, 120); 
+       delay(400); // Chạy mù khoảng 0.6s để tiếp cận tường 2
+    }
+    else if (dem_vat_can == 2) {
+       // [TƯỜNG 2]: Rẽ TRÁI (Hướng về đích)
+       set_motor(-80, 150); 
+       delay(550); // CHỈNH SỐ NÀY để quay đúng 90 độ
+       
+       // LAO THẲNG VỀ ĐÍCH
+       set_motor(180, 180); // Tăng tốc lên
+       delay(2000); // Chạy tầm 1s là lọt vào chuồng
+       
+       // DỪNG VĨNH VIỄN (MISSION COMPLETED)
+       while(true) {
+         set_motor(0, 0);
+         digitalWrite(LED, HIGH); delay(100);
+         digitalWrite(LED, LOW); delay(100);
+       }
+    }
+    
+    // Reset nhẹ để tránh đếm trùng (Safety)
+    xoa_pid();
+  }
+}
