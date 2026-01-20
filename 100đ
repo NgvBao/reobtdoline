@@ -40,11 +40,11 @@ float Kd = 180.0;
 float error = 0, lastError = 0;
 
 // ================== TỐC ĐỘ ==================
-int tocdo_cb = 155; 
-int tocdo_max = 210;
+int tocdo_cb = 210; 
+int tocdo_max = 245;
 
-int xoay_thuan = 150;
-int xoay_nguoc = -40;
+int xoay_thuan = 160;
+int xoay_nguoc = -100;
 
 // ================== BIẾN MAP ==================
 int dem_nga = 0;
@@ -118,17 +118,26 @@ void loop() {
         case 2: chay_thang(110); break;
         case 3: re_phai(); break;
         case 4: re_trai(); break;
-        case 5: chay_thang(70);on_dinh_di_mu(900, 1200); break;
+        case 5: chay_thang(70);on_dinh_di_mu(750, 1000); break;
         case 6: re_trai(); break;
         case 7: chay_thang(70); break;
-        case 8: re_trai();on_dinh_di_mu(1750, 800); break;
+        case 8: re_trai();on_dinh_di_mu(1600, 550); break;
         case 9: chay_thang(90); re_phai(); break;
         case 10: chay_thang(70); break;
         case 11: re_phai(); break;
         case 12: chay_thang(70); break;
         case 13: chay_thang(70); break;
         case 14: chay_thang(70); break;
-        case 15: re_trai();che_do_ve_dich = true;xoa_pid(); break; 
+        case 15: re_trai();
+        set_motor(140, 150); 
+       delay(1450);
+       set_motor(0, 0); delay(200);
+       set_motor(150, -150); delay(550);
+        che_do_ve_dich = true; 
+
+        xoa_pid();
+
+        break;
         default: chay_pid(); break;
       }
       digitalWrite(LED, LOW);
@@ -212,7 +221,7 @@ void re_trai() {
 
   // Giai đoạn 1: Đi thẳng qua tâm ngã tư
   set_motor(tocdo_cb, tocdo_cb); 
-  delay(200); 
+  delay(130); 
 
   // Giai đoạn 2: Xoay tại chỗ tìm line dọc
   while (true) {
@@ -234,7 +243,7 @@ void re_phai() {
 
   // Giai đoạn 1: Đi thẳng qua tâm ngã tư
   set_motor(tocdo_cb, tocdo_cb); 
-  delay(200); 
+  delay(130); 
 
   // Giai đoạn 2: Xoay tại chỗ tìm line dọc
   while (true) {
@@ -352,13 +361,13 @@ float lay_kc() {
 void tranh_vat_can() {
   dang_re = true;
   set_motor(0, 0); delay(200);
-  set_motor(xoay_thuan , -30 ); delay(700); 
+  set_motor(xoay_thuan , -30 ); delay(500); 
   set_motor(100, 100);
   while (true) {
     doc_cam_bien();
     if (s[2] || s[3]) break;
   }
-  set_motor(xoay_nguoc, xoay_thuan);
+  set_motor(-30, xoay_thuan);
   while (true) {
     doc_cam_bien();
     if (s[3]) break;
@@ -389,35 +398,22 @@ void xu_ly_ve_dich_blue() {
   // 1. Đo khoảng cách liên tục
   float dist = lay_kc();
   // TRƯỜNG HỢP A: CHƯA GẶP TƯỜNG (Khoảng cách xa)
-  if (dist >= 12 || dist == 0) { 
+  if (dist >= 8|| dist == 0) { 
     set_motor(120, 120); 
   }
   // TRƯỜNG HỢP B: GẶP TƯỜNG (Khoảng cách < 12cm)
-  else if (dist < 12 && dist > 1) { 
+  else if (dist < 8 && dist > 1) { 
     
     // PHANH GẤP TRƯỚC TIÊN
     set_motor(0, 0); delay(200);
     
-    // Tăng biến đếm (Đã gặp 1 bức tường)
-    dem_vat_can++; 
-
-    // --- XỬ LÝ RẼ ---
-    
-    if (dem_vat_can == 1) {
-       // [TƯỜNG 1]: Rẽ PHẢI
-       set_motor(150, -80); 
-       delay(550); // CHỈNH SỐ NÀY để quay đúng 90 độ
-       set_motor(120, 120); 
-       delay(400); // Chạy mù khoảng 0.6s để tiếp cận tường 2
-    }
-    else if (dem_vat_can == 2) {
        // [TƯỜNG 2]: Rẽ TRÁI (Hướng về đích)
-       set_motor(-80, 150); 
-       delay(550); // CHỈNH SỐ NÀY để quay đúng 90 độ
+       set_motor(-30, 150); 
+       delay(840); // CHỈNH SỐ NÀY để quay đúng 90 độ
        
        // LAO THẲNG VỀ ĐÍCH
        set_motor(180, 180); // Tăng tốc lên
-       delay(2000); // Chạy tầm 1s là lọt vào chuồng
+       delay(2050); // Chạy tầm 1s là lọt vào chuồng
        
        // DỪNG VĨNH VIỄN (MISSION COMPLETED)
        while(true) {
@@ -430,4 +426,3 @@ void xu_ly_ve_dich_blue() {
     // Reset nhẹ để tránh đếm trùng (Safety)
     xoa_pid();
   }
-}
